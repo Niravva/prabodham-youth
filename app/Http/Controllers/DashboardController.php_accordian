@@ -1,0 +1,411 @@
+<?php
+
+namespace App\Http\Controllers;
+
+
+use App\Http\Controllers\Controller;
+use Illuminate\Http\Request;
+use Illuminate\Support\Facades\Auth;
+use Illuminate\Support\Facades\DB;
+
+class DashboardController extends Controller
+{
+    /**
+     * Create a new controller instance.
+     *
+     * @return void
+     */
+    public function __construct()
+    {
+        $this->middleware('auth');
+    }
+
+    /**
+     * Show the application dashboard.
+     *
+     * @return \Illuminate\Contracts\Support\Renderable
+     */
+    public function index(Request $request)
+    {
+        if (get_current_admin_level() == 'Super_Admin') :
+            return view('dashboard.dashboard');
+
+        elseif (get_current_admin_level() == 'Country_Admin') :
+            return view('dashboard.country_admin');
+
+        elseif (get_current_admin_level() == 'State_Admin') :
+            return view('dashboard.state_admin');
+
+        elseif (get_current_admin_level() == 'Pradesh_Admin') :
+
+            $dashboardData = [];
+            $dashboardData['pradesh'] = (array) get_pradesh_by('id', Auth::user()->pradesh_id);
+
+            //Zone Count
+            $totalZone = DB::table('zones')->where('pradesh_id', Auth::user()->pradesh_id)->count();
+            //Sabha Count
+            $totalSabha = DB::table('sabhas')->where('pradesh_id', Auth::user()->pradesh_id)->where('status', 'Active')->count();
+            //Yuvak Count
+            $totalYuvak = DB::table('members')->where('pradesh_id', Auth::user()->pradesh_id)->where('attending_sabha', 'Yes')->count();
+
+
+            //ATTENDANCE PENDING
+            $pendingAttendanceResults = DB::select("SELECT
+                    a1.attendance_id,
+                    (
+                    SELECT
+                        COUNT(*)
+                    FROM
+                        attenders AS a2
+                    WHERE
+                        a1.attendance_id = a2.attendance_id
+                ) AS totalAttender,
+                (
+                    SELECT
+                        COUNT(*)
+                    FROM
+                        attenders AS a2
+                    WHERE
+                        a1.attendance_id = a2.attendance_id AND present = 'Yes'
+                ) AS presentAttender,
+                FORMAT(
+                    (
+                        (
+                        SELECT
+                            COUNT(*)
+                        FROM
+                            attenders AS a2
+                        WHERE
+                            a1.attendance_id = a2.attendance_id AND present = 'Yes'
+                    ) /(
+                    SELECT
+                        COUNT(*)
+                    FROM
+                        attenders AS a2
+                    WHERE
+                        a1.attendance_id = a2.attendance_id
+                ) * 100
+                    ),
+                    2
+                ) AS percentage
+                FROM
+                    attenders AS a1
+                WHERE
+                    a1.pradesh_id = '" . Auth::user()->pradesh_id . "' AND YEAR(a1.created_at) = '" . date('Y') . "' AND FORMAT(
+                        (
+                            (
+                            SELECT
+                                COUNT(*)
+                            FROM
+                                attenders AS a2
+                            WHERE
+                                a1.attendance_id = a2.attendance_id AND present = 'Yes'
+                        ) /(
+                        SELECT
+                            COUNT(*)
+                        FROM
+                            attenders AS a2
+                        WHERE
+                            a1.attendance_id = a2.attendance_id
+                    ) * 100
+                        ),
+                        2
+                    ) < " . ATTENDANCE_PERCENTAGE . "
+                GROUP BY
+                    a1.attendance_id");
+
+
+            //REGULAR
+            $regularResults = DB::select("SELECT
+                    a1.member_id,
+                    (
+                    SELECT
+                        COUNT(*)
+                    FROM
+                        attenders AS a2
+                    WHERE
+                        a2.member_id = a1.member_id AND a2.present = 'Yes'
+                    ORDER BY
+                        a2.id
+                    DESC
+                LIMIT 4
+                ) AS regularCount
+                FROM
+                    attenders AS a1
+                WHERE
+                    a1.pradesh_id = '" . Auth::user()->pradesh_id . "' AND YEAR(a1.created_at) = '" . date('Y') . "' AND(
+                    SELECT
+                        COUNT(*)
+                    FROM
+                        attenders AS a2
+                    WHERE
+                        a2.member_id = a1.member_id AND a2.present = 'Yes'
+                    ORDER BY
+                        a2.id
+                    DESC
+                LIMIT 4
+                ) >= " . REGULAR_LIMIT . "
+                GROUP BY
+                    a1.member_id");
+
+
+            //FRESH
+            $freshResults = DB::select("SELECT
+                    a1.member_id,
+                    (
+                    SELECT
+                        COUNT(*)
+                    FROM
+                        attenders AS a2
+                    WHERE
+                        present = 'Yes' AND a1.member_id = a2.member_id
+                ) AS sabhaAttendCount
+                FROM
+                    attenders AS a1
+                WHERE
+                    a1.pradesh_id = '" . Auth::user()->pradesh_id . "' AND YEAR(a1.created_at) = '" . date('Y') . "' AND (
+                    SELECT
+                        COUNT(*)
+                    FROM
+                        attenders AS a2
+                    WHERE
+                        present = 'Yes' AND a1.member_id = a2.member_id
+                ) < " . FRESH_LIMIT . "
+                GROUP BY
+                    a1.member_id");
+
+
+            //Pradesh statistics
+            $dashboardData['pradesh']['statistics']['totalZone'] = $totalZone;
+            $dashboardData['pradesh']['statistics']['totalSabha'] = $totalSabha;
+            $dashboardData['pradesh']['statistics']['pendingAttendance'] = count($pendingAttendanceResults);
+            $dashboardData['pradesh']['statistics']['youthSummary']['total'] =  $totalYuvak;
+            $dashboardData['pradesh']['statistics']['youthSummary']['regular'] = count($regularResults);
+            $dashboardData['pradesh']['statistics']['youthSummary']['irregular'] = ($totalYuvak - count($regularResults));
+            $dashboardData['pradesh']['statistics']['youthSummary']['fresh'] = count($freshResults);
+
+
+            //Zone
+            $zones =  DB::table('zones')->where('pradesh_id', Auth::user()->pradesh_id)->orderBy('name', 'asc')->get()->toArray();
+            foreach ($zones as $zone) {
+                $_zoneId = $zone->id;
+                $dashboardData['pradesh']['zoneList'][$_zoneId] = (array) $zone;
+
+                //Sabha
+                $sabhas = DB::table('sabhas')->where('zone_id', $_zoneId)->where('status', 'Active')->orderBy('name', 'asc')->get();
+                foreach ($sabhas as $sabha) {
+                    $_sabhaId = $sabha->id;
+                    $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId] = (array) $sabha;
+
+
+                    //Group
+                    if (!isset($dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'])) {
+                        $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'] = [];
+                    }
+                    $groups = DB::table('groups')->where('sabha_id', $_sabhaId)->where('status', 'Active')->orderBy('name', 'asc')->get();
+                    foreach ($groups as $group) {
+                        $_groupId = $group->id;
+                        $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId] = (array) $group;
+
+
+                        //Follow-Up Karyakarta
+                        if (!isset($dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['followUpKaryakartaList'])) {
+                            $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['followUpKaryakartaList'] = [];
+                        }
+                        $admins = DB::table('admins')->where('group_id', $_groupId)->where('admin_type', 'Followup_Admin')->where('status', 'Active')->orderBy('name', 'asc')->get();
+                        foreach ($admins as $admin) {
+                            $_followUpkarykartaId = $admin->id;
+                            $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['followUpKaryakartaList'][$_followUpkarykartaId] = (array) $admin;
+
+
+                            //Youths
+                            $members = DB::table('members')->where('follow_up_by', $_followUpkarykartaId)->orderBy('first_name', 'asc')->get();
+                            foreach ($members as $member) {
+                                $_memberId = $member->id;
+                                $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['followUpKaryakartaList'][$_followUpkarykartaId]['youthList'][$_memberId] = (array) $member;
+                            }
+
+                            //Follow-Up Karyakarta statistics
+                            $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['followUpKaryakartaList'][$_followUpkarykartaId]['statistics']['totalYouths'] = count($members);
+                            $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['followUpKaryakartaList'][$_followUpkarykartaId]['statistics']['pendingAttendance'] = 0;
+                            $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['followUpKaryakartaList'][$_followUpkarykartaId]['statistics']['youthSummary']['total'] = 0;
+                            $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['followUpKaryakartaList'][$_followUpkarykartaId]['statistics']['youthSummary']['regular'] = 0;
+                            $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['followUpKaryakartaList'][$_followUpkarykartaId]['statistics']['youthSummary']['irregular'] = 0;
+                            $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['followUpKaryakartaList'][$_followUpkarykartaId]['statistics']['youthSummary']['fresh'] = 0;
+                        }
+
+                        //Group statistics
+                        $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['statistics']['totalFollowUpKaryakarta'] = count($admins);
+                        $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['statistics']['pendingAttendance'] = 0;
+                        $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['statistics']['youthSummary']['total'] = 0;
+                        $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['statistics']['youthSummary']['regular'] = 0;
+                        $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['statistics']['youthSummary']['irregular'] = 0;
+                        $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['groupList'][$_groupId]['statistics']['youthSummary']['fresh'] = 0;
+                    }
+
+                    //Sabha statistics
+                    $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['statistics']['totalGroup'] = count($groups);
+                    $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['statistics']['pendingAttendance'] = 0;
+                    $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['statistics']['youthSummary']['total'] = 0;
+                    $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['statistics']['youthSummary']['regular'] = 0;
+                    $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['statistics']['youthSummary']['irregular'] = 0;
+                    $dashboardData['pradesh']['zoneList'][$_zoneId]['sabhaList'][$_sabhaId]['statistics']['youthSummary']['fresh'] = 0;
+                }
+
+
+
+                //ATTENDANCE PENDING
+                $zonePendingAttendanceResults = DB::select("SELECT
+                        a1.attendance_id,
+                        (
+                        SELECT
+                            COUNT(*)
+                        FROM
+                            attenders AS a2
+                        WHERE
+                            a1.attendance_id = a2.attendance_id
+                    ) AS totalAttender,
+                    (
+                        SELECT
+                            COUNT(*)
+                        FROM
+                            attenders AS a2
+                        WHERE
+                            a1.attendance_id = a2.attendance_id AND present = 'Yes'
+                    ) AS presentAttender,
+                    FORMAT(
+                        (
+                            (
+                            SELECT
+                                COUNT(*)
+                            FROM
+                                attenders AS a2
+                            WHERE
+                                a1.attendance_id = a2.attendance_id AND present = 'Yes'
+                        ) /(
+                        SELECT
+                            COUNT(*)
+                        FROM
+                            attenders AS a2
+                        WHERE
+                            a1.attendance_id = a2.attendance_id
+                    ) * 100
+                        ),
+                        2
+                    ) AS percentage
+                    FROM
+                        attenders AS a1
+                    WHERE
+                        a1.zone_id = '" . $_zoneId . "' AND YEAR(a1.created_at) = '" . date('Y') . "' AND FORMAT(
+                            (
+                                (
+                                SELECT
+                                    COUNT(*)
+                                FROM
+                                    attenders AS a2
+                                WHERE
+                                    a1.attendance_id = a2.attendance_id AND present = 'Yes'
+                            ) /(
+                            SELECT
+                                COUNT(*)
+                            FROM
+                                attenders AS a2
+                            WHERE
+                                a1.attendance_id = a2.attendance_id
+                        ) * 100
+                            ),
+                            2
+                        ) < " . ATTENDANCE_PERCENTAGE . "
+                    GROUP BY
+                        a1.attendance_id");
+
+
+                //REGULAR
+                $zoneRegularResults = DB::select("SELECT
+                        a1.member_id,
+                        (
+                        SELECT
+                            COUNT(*)
+                        FROM
+                            attenders AS a2
+                        WHERE
+                            a2.member_id = a1.member_id AND a2.present = 'Yes'
+                        ORDER BY
+                            a2.id
+                        DESC
+                    LIMIT 4
+                    ) AS regularCount
+                    FROM
+                        attenders AS a1
+                    WHERE
+                        a1.zone_id = '" . $_zoneId . "' AND YEAR(a1.created_at) = '" . date('Y') . "' AND(
+                        SELECT
+                            COUNT(*)
+                        FROM
+                            attenders AS a2
+                        WHERE
+                            a2.member_id = a1.member_id AND a2.present = 'Yes'
+                        ORDER BY
+                            a2.id
+                        DESC
+                    LIMIT 4
+                    ) >= " . REGULAR_LIMIT . "
+                    GROUP BY
+                        a1.member_id");
+
+
+                //FRESH
+                $zoneFreshResults = DB::select("SELECT
+                        a1.member_id,
+                        (
+                        SELECT
+                            COUNT(*)
+                        FROM
+                            attenders AS a2
+                        WHERE
+                            present = 'Yes' AND a1.member_id = a2.member_id
+                    ) AS sabhaAttendCount
+                    FROM
+                        attenders AS a1
+                    WHERE
+                        a1.zone_id = '" . $_zoneId . "' AND YEAR(a1.created_at) = '" . date('Y') . "' AND (
+                        SELECT
+                            COUNT(*)
+                        FROM
+                            attenders AS a2
+                        WHERE
+                            present = 'Yes' AND a1.member_id = a2.member_id
+                    ) < " . FRESH_LIMIT . "
+                    GROUP BY
+                        a1.member_id");
+
+                //Zone total youths
+                $zoneMemberCount = DB::table('members')->where('zone_id', $_zoneId)->count();
+
+                //Zone statistics
+                $dashboardData['pradesh']['zoneList'][$_zoneId]['statistics']['totalSabha'] = count($sabhas);
+                $dashboardData['pradesh']['zoneList'][$_zoneId]['statistics']['pendingAttendance'] = count($zonePendingAttendanceResults);
+                $dashboardData['pradesh']['zoneList'][$_zoneId]['statistics']['youthSummary']['total'] = $zoneMemberCount;
+                $dashboardData['pradesh']['zoneList'][$_zoneId]['statistics']['youthSummary']['regular'] = count($zoneRegularResults);
+                $dashboardData['pradesh']['zoneList'][$_zoneId]['statistics']['youthSummary']['irregular'] = ($zoneMemberCount - count($zoneRegularResults));
+                $dashboardData['pradesh']['zoneList'][$_zoneId]['statistics']['youthSummary']['fresh'] = count($zoneFreshResults);
+            }
+            //dd($dashboardData);
+
+            return view('dashboard.pradesh_admin')->with('data', $dashboardData)->with('request', $request);
+
+        elseif (get_current_admin_level() == 'Zone_Admin') :
+            return view('dashboard.zone_admin');
+
+        elseif (get_current_admin_level() == 'Sabha_Admin') :
+            return view('dashboard.sabha_admin');
+
+        elseif (get_current_admin_level() == 'Group_Admin') :
+            return view('dashboard.group_admin');
+
+        elseif (get_current_admin_level() == 'Followup_Admin') :
+            return view('dashboard.followup_admin');
+
+        endif;
+    }
+}
